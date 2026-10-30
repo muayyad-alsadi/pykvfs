@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pykvfs"
-version = "0.1.2"
-description = "Redis/Valkey backed FUSE filesystem"
+version = "0.2.0"
+description = "Redis/Valkey backed FUSE filesystem (namespace sharding, single server)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -16,8 +16,11 @@ authors = [
 
 dependencies = [
   "pyfuse3",
-  "redis[hiredis]",
-  "trio"
+  "redis[hiredis]>=5.0",
+]
+
+optional-dependencies.test = [
+  "pytest",
 ]
 
 classifiers = [
@@ -27,10 +30,10 @@ classifiers = [
 ]
 
 [project.scripts]
-kvfs = "kvfs:main"
+kvfs = "kvfs.cli:main"
 
-[tool.setuptools]
-py-modules = ["kvfs"]
+[tool.setuptools.packages.find]
+include = ["kvfs*"]
 
 [project.urls]
 Homepage = "https://github.com/muayyad-alsadi/pykvfs"

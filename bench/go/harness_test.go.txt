@@ -1,0 +1,319 @@
+package store
+
+// Harness for the pykvfs comparison. Lives only in a temp copy of the Go repo.
+// KVFS_HARNESS=parity runs the fixed sequence in parity_ops.txt order.
+// KVFS_HARNESS=bench runs the benchmark and prints one JSON object per line.
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/redis/rueidis"
+)
+
+type counted struct {
+	rueidis.Client
+	n *atomic.Int64
+}
+
+func (c counted) Do(ctx context.Context, cmd rueidis.Completed) rueidis.RedisResult {
+	c.n.Add(1)
+	return c.Client.Do(ctx, cmd)
+}
+
+func (c counted) DoMulti(ctx context.Context, cmds ...rueidis.Completed) []rueidis.RedisResult {
+	c.n.Add(1)
+	return c.Client.DoMulti(ctx, cmds...)
+}
+
+func (c counted) Dedicated(fn func(rueidis.DedicatedClient) error) error {
+	return c.Client.Dedicated(func(d rueidis.DedicatedClient) error {
+		return fn(countedDedicated{d, c.n})
+	})
+}
+
+type countedDedicated struct {
+	rueidis.DedicatedClient
+	n *atomic.Int64
+}
+
+func (c countedDedicated) Do(ctx context.Context, cmd rueidis.Completed) rueidis.RedisResult {
+	c.n.Add(1)
+	return c.DedicatedClient.Do(ctx, cmd)
+}
+
+func (c countedDedicated) DoMulti(ctx context.Context, cmds ...rueidis.Completed) []rueidis.RedisResult {
+	c.n.Add(1)
+	return c.DedicatedClient.DoMulti(ctx, cmds...)
+}
+
+func harnessClient(t *testing.T, addr string, n *atomic.Int64) (*Store, rueidis.Client) {
+	t.Helper()
+	raw, err := rueidis.NewClient(rueidis.ClientOption{InitAddress: []string{addr}, DisableCache: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nil, counted{raw, n}
+}
+
+func errName(err error) string {
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.Is(err, ErrNotFound):
+		return "NotFound"
+	case errors.Is(err, ErrExist):
+		return "Exists"
+	case errors.Is(err, ErrNotEmpty):
+		return "NotEmpty"
+	case errors.Is(err, ErrNotDir):
+		return "NotDir"
+	case errors.Is(err, ErrIsDir):
+		return "IsDir"
+	}
+	return "other:" + err.Error()
+}
+
+func TestHarnessParity(t *testing.T) {
+	if os.Getenv("KVFS_HARNESS") != "parity" {
+		t.Skip("harness")
+	}
+	var n atomic.Int64
+	_, cl := harnessClient(t, os.Getenv("KVFS_ADDR"), &n)
+	st, err := New(cl, os.Getenv("KVFS_NS"), LevelNamespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := st.BootstrapRoot(ctx, 1000, 1000); err != nil {
+		t.Fatal(err)
+	}
+	root := RootRef()
+	log := func(step string, err error) { fmt.Printf("%-28s %s\n", step, errName(err)) }
+	_, a, err := st.CreateFile(ctx, root, "a", 0644, 1000, 1000)
+	log("create a", err)
+	log("write a", st.WriteAt(ctx, a.ParentID, "a", 0, []byte("hello")))
+	_, d, err := st.Mkdir(ctx, root, "d", 0755, 1000, 1000)
+	log("mkdir d", err)
+	_, f, err := st.CreateFile(ctx, d, "f", 0644, 1000, 1000)
+	log("create d/f", err)
+	_, _, err = st.Symlink(ctx, root, "l", "a", 1000, 1000)
+	log("symlink l->a", err)
+	_, err = st.Rename(ctx, root, "a", root, "b")
+	log("rename a->b", err)
+	_, err = st.Rename(ctx, root, "d", root, "e")
+	log("rename d->e", err)
+	d = Ref{ParentID: root.ID, Name: "e", ID: d.ID} // the directory's address changed with its name
+	_, err = st.Truncate(ctx, f.ParentID, "f", 5)
+	log("truncate e/f 5", err)
+	log("write e/f at 5", st.WriteAt(ctx, f.ParentID, "f", 5, []byte("!!")))
+	log("unlink l", st.Unlink(ctx, root, "l"))
+	log("unlink b", st.Unlink(ctx, root, "b"))
+	log("rmdir e (not empty)", st.Rmdir(ctx, root, "e"))
+	_, _, err = st.CreateFile(ctx, d, "g", 0600, 1000, 1000)
+	log("create e/g", err)
+	log("unlink e/g", st.Unlink(ctx, d, "g"))
+	log("rmdir e (empty)", st.Rmdir(ctx, root, "e"))
+	_, x, err := st.Mkdir(ctx, root, "x", 0755, 1000, 1000)
+	log("mkdir x", err)
+	_, _, err = st.CreateFile(ctx, x, "y", 0644, 1000, 1000)
+	log("create x/y", err)
+	_, err = st.Rename(ctx, root, "x", root, "z")
+	log("rename x->z (dir)", err)
+	log("unlink z/y", st.Unlink(ctx, Ref{ParentID: root.ID, Name: "z", ID: x.ID}, "y"))
+	log("rmdir z", st.Rmdir(ctx, root, "z"))
+	_, _, err = st.CreateFile(ctx, root, "p", 0644, 1000, 1000)
+	log("create p", err)
+	_, _, err = st.CreateFile(ctx, root, "q", 0644, 1000, 1000)
+	log("create q", err)
+	_, err = st.RenameNoReplace(ctx, root, "p", root, "q")
+	log("rename-noreplace p->q", err)
+	_, err = st.Rename(ctx, root, "p", root, "q")
+	log("rename p->q (replace)", err)
+}
+
+// benchRow is one measured operation at one size.
+type benchRow struct {
+	Impl   string  `json:"impl"`
+	N      int     `json:"n"`
+	Op     string  `json:"op"`
+	RT     float64 `json:"rt"`
+	Cmds   float64 `json:"cmds"`
+	MedUS  float64 `json:"median_us"`
+	Iters  int     `json:"iters"`
+}
+
+func medianUS(d []time.Duration) float64 {
+	sort.Slice(d, func(i, j int) bool { return d[i] < d[j] })
+	return float64(d[len(d)/2].Microseconds())
+}
+
+func TestHarnessBench(t *testing.T) {
+	if os.Getenv("KVFS_HARNESS") != "bench" {
+		t.Skip("harness")
+	}
+	var n atomic.Int64
+	_, cl := harnessClient(t, os.Getenv("KVFS_ADDR"), &n)
+	ns := os.Getenv("KVFS_NS")
+	iters, _ := strconv.Atoi(os.Getenv("KVFS_ITERS"))
+	ctx := context.Background()
+	for _, size := range []int{10, 1000, 10000} {
+		st, err := New(cl, ns+"-"+strconv.Itoa(size), LevelNamespace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.BootstrapRoot(ctx, 1000, 1000); err != nil {
+			t.Fatal(err)
+		}
+		runBench(t, ctx, st, cl, &n, size, iters)
+	}
+}
+
+// measure runs one op iters times; setup runs before each unmeasured.
+func measure(t *testing.T, cl rueidis.Client, n *atomic.Int64, size int, op string, iters int, setup func(int), run func(int) error) {
+	t.Helper()
+	var durs []time.Duration
+	var rts, cmds float64
+	for i := 0; i < iters; i++ {
+		setup(i)
+		before := n.Load()
+		c0 := commandCount(cl)
+		start := time.Now()
+		if err := run(i); err != nil {
+			t.Fatalf("%s: %v", op, err)
+		}
+		durs = append(durs, time.Since(start))
+		rts += float64(n.Load() - before)
+		cmds += float64(commandCount(cl) - c0)
+	}
+	row := benchRow{Impl: "go", N: size, Op: op, RT: rts / float64(iters), Cmds: cmds / float64(iters), MedUS: medianUS(durs), Iters: iters}
+	out, _ := json.Marshal(row)
+	fmt.Println(string(out))
+}
+
+// commandCount sums INFO commandstats calls, excluding the INFO calls themselves.
+func commandCount(cl rueidis.Client) float64 {
+	ctx := context.Background()
+	raw := cl
+	if c, ok := cl.(counted); ok {
+		raw = c.Client // INFO must not count as a round trip of the measured op
+	}
+	info, err := raw.Do(ctx, raw.B().Info().Section("commandstats").Build()).ToString()
+	if err != nil {
+		return 0
+	}
+	var total float64
+	for _, line := range strings.Split(info, "\r\n") {
+		if !strings.HasPrefix(line, "cmdstat_") || strings.HasPrefix(line, "cmdstat_info:") {
+			continue
+		}
+		i := strings.Index(line, "calls=")
+		if i < 0 {
+			continue
+		}
+		rest := line[i+len("calls="):]
+		if j := strings.IndexByte(rest, ','); j >= 0 {
+			rest = rest[:j]
+		}
+		v, _ := strconv.ParseFloat(rest, 64)
+		total += v
+	}
+	return total
+}
+
+func runBench(t *testing.T, ctx context.Context, st *Store, cl rueidis.Client, n *atomic.Int64, size, iters int) {
+	root := RootRef()
+	_, d, err := st.Mkdir(ctx, root, "d", 0755, 1000, 1000)
+	must(t, err)
+	for i := 0; i < size; i++ {
+		_, _, err := st.CreateFile(ctx, d, fmt.Sprintf("f%05d", i), 0644, 1000, 1000)
+		must(t, err)
+	}
+	_, f0, err := st.CreateFile(ctx, d, "f00000x", 0644, 1000, 1000)
+	must(t, err)
+	must(t, st.WriteAt(ctx, d.ID, "f00000x", 0, make([]byte, 64)))
+	name := func(prefix string, i int) string { return fmt.Sprintf("%s%d", prefix, i) }
+
+	measure(t, cl, n, size, "stat", iters, func(int) {}, func(int) error {
+		_, err := st.Stat(ctx, d.ID, "f00000x")
+		return err
+	})
+	measure(t, cl, n, size, "readdir", iters, func(int) {}, func(int) error {
+		_, err := st.ListChildren(ctx, d)
+		return err
+	})
+	measure(t, cl, n, size, "readdirplus", iters, func(int) {}, func(int) error {
+		kids, err := st.ListChildren(ctx, d)
+		if err != nil {
+			return err
+		}
+		for _, k := range kids {
+			if _, err := st.Stat(ctx, d.ID, k.Name); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	measure(t, cl, n, size, "create", iters, func(int) {}, func(i int) error {
+		_, _, err := st.CreateFile(ctx, d, name("c", i), 0644, 1000, 1000)
+		return err
+	})
+	measure(t, cl, n, size, "mkdir", iters, func(int) {}, func(i int) error {
+		_, _, err := st.Mkdir(ctx, d, name("m", i), 0755, 1000, 1000)
+		return err
+	})
+	measure(t, cl, n, size, "write64", iters, func(int) {}, func(int) error {
+		return st.WriteAt(ctx, d.ID, "f00000x", 0, make([]byte, 64))
+	})
+	measure(t, cl, n, size, "read64", iters, func(int) {}, func(int) error {
+		_, err := st.ReadAt(ctx, d.ID, "f00000x", 0, 64)
+		return err
+	})
+	measure(t, cl, n, size, "rename_file", iters, func(int) {}, func(i int) error {
+		from, to := "f00000x", "f00000y"
+		if i%2 == 1 {
+			from, to = to, from
+		}
+		_, err := st.Rename(ctx, d, from, d, to)
+		return err
+	})
+	measure(t, cl, n, size, "unlink", iters, func(i int) {
+		_, _, _ = st.CreateFile(ctx, d, name("u", i), 0644, 1000, 1000)
+	}, func(i int) error {
+		return st.Unlink(ctx, d, name("u", i))
+	})
+	measure(t, cl, n, size, "rmdir_empty", iters, func(i int) {
+		_, _, _ = st.Mkdir(ctx, d, name("e", i), 0755, 1000, 1000)
+	}, func(i int) error {
+		return st.Rmdir(ctx, d, name("e", i))
+	})
+	measure(t, cl, n, size, "truncate", iters, func(int) {}, func(int) error {
+		_, err := st.Truncate(ctx, d.ID, "f00000x", 128)
+		return err
+	})
+	measure(t, cl, n, size, "rename_dir", iters, func(int) {}, func(i int) error {
+		from, to := "d", "d2"
+		if i%2 == 1 {
+			from, to = to, from
+		}
+		_, err := st.Rename(ctx, root, from, root, to)
+		return err
+	})
+	_ = f0
+}
+
+func must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}

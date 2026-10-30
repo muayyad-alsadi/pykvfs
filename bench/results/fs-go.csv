@@ -1,0 +1,12 @@
+go,extract,1,10.672
+go,find_stat,1,0.065
+go,archive_tgz,1,9.952
+go,archive_tar,1,7.051
+go,extract,2,10.326
+go,find_stat,2,0.049
+go,archive_tgz,2,10.245
+go,archive_tar,2,6.736
+go,extract,3,10.497
+go,find_stat,3,0.067
+go,archive_tgz,3,10.103
+go,archive_tar,3,8.348

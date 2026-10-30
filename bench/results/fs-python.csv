@@ -1,0 +1,12 @@
+python,extract,1,30.968
+python,find_stat,1,0.102
+python,archive_tgz,1,9.352
+python,archive_tar,1,0.288
+python,extract,2,30.389
+python,find_stat,2,0.111
+python,archive_tgz,2,9.542
+python,archive_tar,2,0.281
+python,extract,3,29.372
+python,find_stat,3,0.097
+python,archive_tgz,3,9.537
+python,archive_tar,3,0.275

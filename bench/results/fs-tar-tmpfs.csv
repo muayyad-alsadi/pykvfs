@@ -1,0 +1,9 @@
+tmpfs-baseline,extract,1,0.149
+tmpfs-baseline,find_stat,1,0.014
+tmpfs-baseline,archive,1,0.156
+tmpfs-baseline,extract,2,0.182
+tmpfs-baseline,find_stat,2,0.016
+tmpfs-baseline,archive,2,0.207
+tmpfs-baseline,extract,3,0.158
+tmpfs-baseline,find_stat,3,0.015
+tmpfs-baseline,archive,3,0.192

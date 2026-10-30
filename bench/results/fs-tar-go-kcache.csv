@@ -1,0 +1,9 @@
+go,extract,1,18.163
+go,find_stat,1,0.059
+go,archive,1,0.827
+go,extract,2,18.026
+go,find_stat,2,0.070
+go,archive,2,0.894
+go,extract,3,18.131
+go,find_stat,3,0.067
+go,archive,3,0.833
