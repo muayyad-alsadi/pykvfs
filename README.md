@@ -1,5 +1,7 @@
 # pykvfs
 
+Python implementation of [kvfs](https://github.com/muayyad-alsadi/kvfs): Key-Value backed networked shared filesystem using redis/valkey server.
+
 A FUSE3 filesystem whose metadata and file contents live in Redis or Valkey. It is a Python
 implementation of the key schema and operations of the Go `kvfs` (see `SPEC.md`), and it writes
 the same keys, so a mount of either implementation reads the other's namespace.

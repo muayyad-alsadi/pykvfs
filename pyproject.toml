@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pykvfs"
-version = "0.2.0"
-description = "Redis/Valkey backed FUSE filesystem (namespace sharding, single server)"
+version = "0.2.1"
+description = "Python implementation of kvfs: Key-Value backed networked shared filesystem using redis/valkey server"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -38,3 +38,4 @@ include = ["kvfs*"]
 [project.urls]
 Homepage = "https://github.com/muayyad-alsadi/pykvfs"
 Repository = "https://github.com/muayyad-alsadi/pykvfs"
+"Go implementation" = "https://github.com/muayyad-alsadi/kvfs"

@@ -5,4 +5,4 @@ the key builder, kvfs.fs owns the FUSE nodes and errno mapping, kvfs.cli owns
 flags and wiring.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
